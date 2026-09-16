@@ -43,7 +43,6 @@ def create_two_cycles_graph(
     labels: tuple[str, str],
     output_path: str | Path,
 ) -> Path:
-
     if first_cycle_size <= 0 or second_cycle_size <= 0:
         raise ValueError("Cycle sizes must be positive")
 
