@@ -11,7 +11,7 @@ from pyformlang.finite_automaton import (
     State,
     Symbol,
 )
-from scipy.sparse import csr_matrix, kron
+from scipy.sparse import csr_matrix, eye, kron
 
 from project.task2 import graph_to_nfa, regex_to_dfa
 
@@ -57,6 +57,7 @@ class AdjacencyMatrixFA:
         # conventional name used in solutions to this assignment.
         self.adjacency_matrices = self.matrices
         self.bool_matrices = self.matrices
+        self._closure: csr_matrix | None = None
 
     @classmethod
     def _from_components(
@@ -77,42 +78,63 @@ class AdjacencyMatrixFA:
         result.matrices = matrices
         result.adjacency_matrices = matrices
         result.bool_matrices = matrices
+        result._closure = None
         return result
 
     def accepts(self, word: Iterable[Symbol]) -> bool:
         """Return whether at least one run accepts ``word``."""
 
-        current_states = set(self.start_states)
+        current_states = self._indicator_vector(self.start_states)
         for raw_symbol in word:
             symbol = (
                 raw_symbol if isinstance(raw_symbol, Symbol) else Symbol(raw_symbol)
             )
             matrix = self.matrices.get(symbol)
-            if matrix is None or not current_states:
+            if matrix is None or current_states.nnz == 0:
                 return False
 
-            next_states: set[int] = set()
-            for state in current_states:
-                row = matrix.getrow(state)
-                next_states.update(row.indices)
-            current_states = next_states
+            current_states = (current_states @ matrix).astype(bool)
+            current_states.eliminate_zeros()
 
-        return bool(current_states & self.final_states)
+        return bool(current_states[:, list(self.final_states)].nnz)
+
+    def _indicator_vector(self, states: Iterable[int]) -> csr_matrix:
+        """Create a Boolean row vector marking the supplied state indices."""
+
+        indices = np.fromiter(states, dtype=int)
+        return csr_matrix(
+            (
+                np.ones(indices.size, dtype=bool),
+                (np.zeros(indices.size, dtype=int), indices),
+            ),
+            shape=(1, self.num_states),
+            dtype=bool,
+        )
+
+    def _transitive_closure(self) -> csr_matrix:
+        """Compute reflexive transitive closure by Boolean matrix squaring."""
+
+        if self._closure is not None:
+            return self._closure
+
+        closure = eye(self.num_states, format="csr", dtype=bool)
+        for matrix in self.matrices.values():
+            closure = closure.maximum(matrix)
+
+        while True:
+            expanded = (closure @ closure).astype(bool)
+            expanded.eliminate_zeros()
+            next_closure = closure.maximum(expanded)
+            if next_closure.nnz == closure.nnz:
+                self._closure = next_closure
+                return self._closure
+            closure = next_closure
 
     def _reachable_from(self, starts: Iterable[int]) -> set[int]:
-        """Find states reachable by a word of any length, including zero."""
+        """Find reachable states using a Boolean vector-matrix product."""
 
-        reachable = set(starts)
-        pending = list(reachable)
-        while pending:
-            state = pending.pop()
-            for matrix in self.matrices.values():
-                for target in matrix.getrow(state).indices:
-                    target = int(target)
-                    if target not in reachable:
-                        reachable.add(target)
-                        pending.append(target)
-        return reachable
+        reachable = self._indicator_vector(starts) @ self._transitive_closure()
+        return {int(state) for state in reachable.indices}
 
     def is_empty(self) -> bool:
         """Return whether the language of the automaton is empty."""
